@@ -9,6 +9,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any, Dict, List, Optional
 
+from src.cover_inserter import get_pdf_page_count, prepend_cover_pages_to_pdfs
 from src.naming_engine import (
     FolderAnalysis,
     build_proposals,
@@ -66,6 +67,12 @@ class CapturaCerosApp(tk.Tk):
         self.store = LocalCaptureStore()
         self.current_analysis: Optional[FolderAnalysis] = None
         self.is_admin_mode: bool = False
+
+        # Estado de la Pestaña 2 (Inserción de Carátula PDF)
+        self.cover_folder_path: str = ""
+        self.selected_cover_pdf_path: Optional[str] = None
+        self.selected_cover_total_pages: int = 0
+        self.last_cover_tree_anchor_idx: Optional[int] = None
 
         self._configure_styles()
         self._build_layout()
@@ -165,22 +172,28 @@ class CapturaCerosApp(tk.Tk):
         )
         self.lbl_global_stats.pack(side=tk.RIGHT)
 
-        # Notebook con las 2 vistas principales
+        # Notebook con las 3 vistas principales
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
 
         self.tab_capture = ttk.Frame(self.notebook, padding=8)
+        self.tab_cover = ttk.Frame(self.notebook, padding=8)
         self.tab_review = ttk.Frame(self.notebook, padding=8)
 
         self.notebook.add(
             self.tab_capture, text="  1. Captura Local de Directorio + Visor PDF  "
         )
         self.notebook.add(
+            self.tab_cover,
+            text="  2. Insertar Carátula en PDFs (Solo Administrador)  ",
+        )
+        self.notebook.add(
             self.tab_review,
-            text="  2. Revisión de Lotes JSON y Panel Administrador (MySQL / Cambios Físicos)  ",
+            text="  3. Revisión de Lotes JSON y Panel Administrador (MySQL / Cambios Físicos)  ",
         )
 
         self._build_capture_tab()
+        self._build_cover_tab()
         self._build_review_tab()
 
     # =========================================================================
@@ -563,7 +576,298 @@ class CapturaCerosApp(tk.Tk):
         self.pdf_viewer.pack(fill=tk.BOTH, expand=True)
 
     # =========================================================================
-    # PESTAÑA 2: REVISIÓN Y PANEL DE MODO ADMINISTRADOR (MYSQL + EJECUCIÓN)
+    # PESTAÑA 2: INSERTAR CARÁTULA EN PDFs (EXCLUSIVO MODO ADMINISTRADOR)
+    # =========================================================================
+    def _build_cover_tab(self) -> None:
+        self.lbl_cover_locked_notice = tk.Label(
+            self.tab_cover,
+            text="🔒 Función exclusiva para Administrador. Haz clic en '🔒 Activar Modo Administrador' en la esquina superior derecha e ingresa el PIN (1944123321) para usar este módulo.",
+            bg="#FEF2F2",
+            fg="#991B1B",
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=6,
+        )
+        self.lbl_cover_locked_notice.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
+
+        # Barra superior para seleccionar la carpeta de trabajo
+        self.cover_top_bar = ttk.LabelFrame(
+            self.tab_cover,
+            text=" 1. Selección de Carpeta con los PDFs y la Carátula ",
+            padding=(10, 8),
+        )
+        self.cover_top_bar.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
+
+        ttk.Label(self.cover_top_bar, text="Ruta de Carpeta:").pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+
+        self.var_cover_folder_path = tk.StringVar(value="")
+        self.ent_cover_folder = ttk.Entry(
+            self.cover_top_bar,
+            textvariable=self.var_cover_folder_path,
+            font=("Consolas", 10),
+        )
+        self.ent_cover_folder.pack(
+            side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6)
+        )
+        self.ent_cover_folder.bind(
+            "<Return>", lambda _: self.load_cover_folder_from_entry()
+        )
+
+        self.btn_cover_browse = ttk.Button(
+            self.cover_top_bar,
+            text="📂 Examinar Carpeta...",
+            command=self.browse_cover_directory,
+        )
+        self.btn_cover_browse.pack(side=tk.LEFT, padx=3)
+
+        self.btn_cover_quick = ttk.Button(
+            self.cover_top_bar,
+            text="⚡ Elegir de Tuxtla...",
+            command=self.open_cover_quick_picker_dialog,
+        )
+        self.btn_cover_quick.pack(side=tk.LEFT, padx=3)
+
+        self.btn_cover_reload = ttk.Button(
+            self.cover_top_bar,
+            text="🔄 Cargar PDFs",
+            command=self.load_cover_folder_from_entry,
+        )
+        self.btn_cover_reload.pack(side=tk.LEFT, padx=3)
+
+        # Panel dividido: Izquierda (Configuración de Carátula + Lista de PDFs con Shift+Clic) | Derecha (Visor PDF con pantalla de carga)
+        cover_paned = ttk.PanedWindow(self.tab_cover, orient=tk.HORIZONTAL)
+        cover_paned.pack(fill=tk.BOTH, expand=True)
+
+        left_cover_pane = ttk.Frame(cover_paned, padding=(0, 0, 6, 0))
+        right_cover_pane = ttk.LabelFrame(
+            cover_paned,
+            text=" Visor de PDF Integrado (Previsualización de Carátula y Documentos) ",
+            padding=4,
+        )
+
+        cover_paned.add(left_cover_pane, weight=5)
+        cover_paned.add(right_cover_pane, weight=6)
+
+        # Sección de definición de Carátula y Rango de Páginas
+        cfg_box = ttk.LabelFrame(
+            left_cover_pane,
+            text=" 2. Configuración del PDF Carátula y Páginas a Insertar al Inicio ",
+            padding=10,
+        )
+        cfg_box.pack(fill=tk.X, side=tk.TOP, pady=(0, 8))
+
+        row_cov_sel = ttk.Frame(cfg_box)
+        row_cov_sel.pack(fill=tk.X, pady=(0, 8))
+
+        self.btn_set_as_cover = ttk.Button(
+            row_cov_sel,
+            text="⭐ Usar PDF Seleccionado en la Tabla como CARÁTULA",
+            command=self.set_selected_row_as_cover,
+        )
+        self.btn_set_as_cover.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.lbl_cover_selected = tk.Label(
+            row_cov_sel,
+            text="Carátula actual: (Ninguna seleccionada)",
+            bg="#FEF9C3",
+            fg="#854D0E",
+            font=("Consolas", 9, "bold"),
+            padx=10,
+            pady=4,
+        )
+        self.lbl_cover_selected.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        # Opciones de páginas de la carátula (Por defecto: TODAS)
+        pages_frame = ttk.Frame(cfg_box)
+        pages_frame.pack(fill=tk.X, pady=(4, 4))
+
+        ttk.Label(
+            pages_frame,
+            text="Páginas de la carátula a insertar al inicio de cada PDF:",
+            font=("Segoe UI", 9, "bold"),
+        ).grid(row=0, column=0, columnspan=6, sticky=tk.W, pady=(0, 6))
+
+        self.var_cover_page_mode = tk.StringVar(value="ALL")
+        self.var_cover_single_page = tk.StringVar(value="1")
+        self.var_cover_range_from = tk.StringVar(value="1")
+        self.var_cover_range_to = tk.StringVar(value="1")
+
+        self.rb_cov_all = ttk.Radiobutton(
+            pages_frame,
+            text="Todas las páginas de la carátula (Por defecto)",
+            value="ALL",
+            variable=self.var_cover_page_mode,
+            command=self._update_cover_page_inputs_state,
+        )
+        self.rb_cov_all.grid(row=1, column=0, columnspan=6, sticky=tk.W, pady=2)
+
+        self.rb_cov_single = ttk.Radiobutton(
+            pages_frame,
+            text="Solo una página en particular:",
+            value="SINGLE",
+            variable=self.var_cover_page_mode,
+            command=self._update_cover_page_inputs_state,
+        )
+        self.rb_cov_single.grid(row=2, column=0, sticky=tk.W, pady=2)
+
+        ttk.Label(pages_frame, text="Pág. #").grid(
+            row=2, column=1, sticky=tk.E, padx=(6, 2)
+        )
+        self.ent_cov_single = ttk.Entry(
+            pages_frame,
+            textvariable=self.var_cover_single_page,
+            width=6,
+            font=("Consolas", 10, "bold"),
+        )
+        self.ent_cov_single.grid(row=2, column=2, sticky=tk.W, padx=(0, 12))
+
+        self.rb_cov_range = ttk.Radiobutton(
+            pages_frame,
+            text="Rango de páginas:",
+            value="RANGE",
+            variable=self.var_cover_page_mode,
+            command=self._update_cover_page_inputs_state,
+        )
+        self.rb_cov_range.grid(row=3, column=0, sticky=tk.W, pady=2)
+
+        ttk.Label(pages_frame, text="Desde pág.").grid(
+            row=3, column=1, sticky=tk.E, padx=(6, 2)
+        )
+        self.ent_cov_from = ttk.Entry(
+            pages_frame,
+            textvariable=self.var_cover_range_from,
+            width=6,
+            font=("Consolas", 10, "bold"),
+        )
+        self.ent_cov_from.grid(row=3, column=2, sticky=tk.W, padx=(0, 8))
+
+        ttk.Label(pages_frame, text="Hasta pág.").grid(
+            row=3, column=3, sticky=tk.E, padx=(4, 2)
+        )
+        self.ent_cov_to = ttk.Entry(
+            pages_frame,
+            textvariable=self.var_cover_range_to,
+            width=6,
+            font=("Consolas", 10, "bold"),
+        )
+        self.ent_cov_to.grid(row=3, column=4, sticky=tk.W)
+
+        # Lista de PDFs de la carpeta con selección múltiple (Shift+Clic Izquierdo y Botón Seleccionar Todo excluyendo carátula)
+        list_box = ttk.LabelFrame(
+            left_cover_pane,
+            text=" 3. Selección de PDFs Destino (Soporta Shift + Clic Izquierdo, Ctrl + Clic o Seleccionar Todo sin Carátula) ",
+            padding=8,
+        )
+        list_box.pack(fill=tk.BOTH, expand=True)
+
+        sel_toolbar = ttk.Frame(list_box)
+        sel_toolbar.pack(fill=tk.X, pady=(0, 6))
+
+        self.btn_cov_select_all = ttk.Button(
+            sel_toolbar,
+            text="☑️ Seleccionar Todo (Excluyendo Carátula)",
+            command=self.cover_select_all_excluding_cover,
+        )
+        self.btn_cov_select_all.pack(side=tk.LEFT, padx=(0, 6))
+
+        self.btn_cov_clear_sel = ttk.Button(
+            sel_toolbar,
+            text="🔲 Deseleccionar Todo",
+            command=self.cover_deselect_all,
+        )
+        self.btn_cov_clear_sel.pack(side=tk.LEFT, padx=3)
+
+        self.lbl_cov_sel_count = ttk.Label(
+            sel_toolbar,
+            text="Seleccionados: 0 PDFs",
+            font=("Segoe UI", 9, "bold"),
+            foreground="#0F766E",
+        )
+        self.lbl_cov_sel_count.pack(side=tk.RIGHT)
+
+        cov_tree_container = ttk.Frame(list_box)
+        cov_tree_container.pack(fill=tk.BOTH, expand=True)
+
+        cov_cols = ("rol", "filename", "pages_info")
+        self.tree_cover_pdfs = ttk.Treeview(
+            cov_tree_container,
+            columns=cov_cols,
+            show="headings",
+            selectmode="extended",
+        )
+        self.tree_cover_pdfs.heading("rol", text="Rol / Estado")
+        self.tree_cover_pdfs.heading("filename", text="Nombre del Archivo PDF")
+        self.tree_cover_pdfs.heading("pages_info", text="Ubicación")
+
+        self.tree_cover_pdfs.column("rol", width=155, anchor=tk.CENTER, stretch=False)
+        self.tree_cover_pdfs.column("filename", width=330, anchor=tk.W)
+        self.tree_cover_pdfs.column("pages_info", width=220, anchor=tk.W)
+
+        self.tree_cover_pdfs.tag_configure(
+            "IS_COVER", background="#FEF08A", foreground="#854D0E"
+        )
+        self.tree_cover_pdfs.tag_configure(
+            "NORMAL_PDF", background="#FFFFFF", foreground="#0F172A"
+        )
+
+        c_vsb = ttk.Scrollbar(
+            cov_tree_container, orient=tk.VERTICAL, command=self.tree_cover_pdfs.yview
+        )
+        c_hsb = ttk.Scrollbar(
+            cov_tree_container,
+            orient=tk.HORIZONTAL,
+            command=self.tree_cover_pdfs.xview,
+        )
+        self.tree_cover_pdfs.configure(
+            yscrollcommand=c_vsb.set, xscrollcommand=c_hsb.set
+        )
+        c_vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        c_hsb.pack(side=tk.BOTTOM, fill=tk.X)
+        self.tree_cover_pdfs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Eventos para Shift + Clic Izquierdo, clic simple y actualización del visor
+        self.tree_cover_pdfs.bind("<ButtonPress-1>", self._on_cover_tree_click)
+        self.tree_cover_pdfs.bind(
+            "<<TreeviewSelect>>", self._on_cover_tree_selection_changed
+        )
+
+        # Barra inferior de ejecución de inserción de carátula
+        exec_bar = ttk.Frame(left_cover_pane, padding=(0, 8, 0, 0))
+        exec_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self.lbl_cover_progress = ttk.Label(
+            exec_bar,
+            text="",
+            font=("Segoe UI", 9, "italic"),
+            foreground="#0369A1",
+        )
+        self.lbl_cover_progress.pack(side=tk.LEFT)
+
+        self.btn_execute_cover_insert = tk.Button(
+            exec_bar,
+            text="📑 INSERTAR PÁGINAS DE CARÁTULA AL INICIO DE LOS PDFs SELECCIONADOS",
+            bg="#15803D",
+            fg="#FFFFFF",
+            activebackground="#166534",
+            activeforeground="#FFFFFF",
+            font=("Segoe UI", 9, "bold"),
+            padx=14,
+            pady=6,
+            cursor="hand2",
+            command=self.execute_cover_insertion,
+        )
+        self.btn_execute_cover_insert.pack(side=tk.RIGHT)
+
+        # Visor PDF integrado de la Pestaña 2
+        self.cover_pdf_viewer = EmbeddedPdfViewer(right_cover_pane)
+        self.cover_pdf_viewer.pack(fill=tk.BOTH, expand=True)
+
+        self._update_cover_page_inputs_state()
+
+    # =========================================================================
+    # PESTAÑA 3: REVISIÓN Y PANEL DE MODO ADMINISTRADOR (MYSQL + EJECUCIÓN)
     # =========================================================================
     def _build_review_tab(self) -> None:
         # Barra de herramientas general (Disponible para Capturista y Administrador)
@@ -897,12 +1201,28 @@ class CapturaCerosApp(tk.Tk):
                 bg="#B91C1C",
                 fg="#FFFFFF",
             )
+            # Pestaña 3
             self.lbl_admin_locked_notice.pack_forget()
             self.btn_approve.config(state=tk.NORMAL)
             self.btn_mysql_cfg.config(state=tk.NORMAL)
             self.btn_apply_changes.config(state=tk.NORMAL, bg="#15803D")
             self.btn_apply_all_approved.config(state=tk.NORMAL, bg="#0F766E")
             self.btn_rollback.config(state=tk.NORMAL, bg="#B91C1C")
+
+            # Pestaña 2 (Insertar Carátula)
+            self.lbl_cover_locked_notice.pack_forget()
+            self.ent_cover_folder.config(state=tk.NORMAL)
+            self.btn_cover_browse.config(state=tk.NORMAL)
+            self.btn_cover_quick.config(state=tk.NORMAL)
+            self.btn_cover_reload.config(state=tk.NORMAL)
+            self.btn_set_as_cover.config(state=tk.NORMAL)
+            self.rb_cov_all.config(state=tk.NORMAL)
+            self.rb_cov_single.config(state=tk.NORMAL)
+            self.rb_cov_range.config(state=tk.NORMAL)
+            self._update_cover_page_inputs_state()
+            self.btn_cov_select_all.config(state=tk.NORMAL)
+            self.btn_cov_clear_sel.config(state=tk.NORMAL)
+            self.btn_execute_cover_insert.config(state=tk.NORMAL, bg="#15803D")
         else:
             self.lbl_role_badge.config(
                 text="MODO: CAPTURISTA (100% Local)",
@@ -914,6 +1234,7 @@ class CapturaCerosApp(tk.Tk):
                 bg="#334155",
                 fg="#F8FAFC",
             )
+            # Pestaña 3
             self.lbl_admin_locked_notice.pack(
                 fill=tk.X, pady=(0, 6), before=self.admin_controls_row
             )
@@ -922,6 +1243,428 @@ class CapturaCerosApp(tk.Tk):
             self.btn_apply_changes.config(state=tk.DISABLED, bg="#94A3B8")
             self.btn_apply_all_approved.config(state=tk.DISABLED, bg="#94A3B8")
             self.btn_rollback.config(state=tk.DISABLED, bg="#94A3B8")
+
+            # Pestaña 2 (Insertar Carátula)
+            self.lbl_cover_locked_notice.pack(
+                fill=tk.X, side=tk.TOP, pady=(0, 8), before=self.cover_top_bar
+            )
+            self.ent_cover_folder.config(state=tk.DISABLED)
+            self.btn_cover_browse.config(state=tk.DISABLED)
+            self.btn_cover_quick.config(state=tk.DISABLED)
+            self.btn_cover_reload.config(state=tk.DISABLED)
+            self.btn_set_as_cover.config(state=tk.DISABLED)
+            self.rb_cov_all.config(state=tk.DISABLED)
+            self.rb_cov_single.config(state=tk.DISABLED)
+            self.rb_cov_range.config(state=tk.DISABLED)
+            self.ent_cov_single.config(state=tk.DISABLED)
+            self.ent_cov_from.config(state=tk.DISABLED)
+            self.ent_cov_to.config(state=tk.DISABLED)
+            self.btn_cov_select_all.config(state=tk.DISABLED)
+            self.btn_cov_clear_sel.config(state=tk.DISABLED)
+            self.btn_execute_cover_insert.config(state=tk.DISABLED, bg="#94A3B8")
+
+    # =========================================================================
+    # LÓGICA DE PESTAÑA 2: INSERTAR CARÁTULA EN PDFs (SOLO ADMINISTRADOR)
+    # =========================================================================
+    def _update_cover_page_inputs_state(self) -> None:
+        if not self.is_admin_mode:
+            self.ent_cov_single.config(state=tk.DISABLED)
+            self.ent_cov_from.config(state=tk.DISABLED)
+            self.ent_cov_to.config(state=tk.DISABLED)
+            return
+
+        mode = self.var_cover_page_mode.get()
+        self.ent_cov_single.config(
+            state=tk.NORMAL if mode == "SINGLE" else tk.DISABLED
+        )
+        self.ent_cov_from.config(
+            state=tk.NORMAL if mode == "RANGE" else tk.DISABLED
+        )
+        self.ent_cov_to.config(
+            state=tk.NORMAL if mode == "RANGE" else tk.DISABLED
+        )
+
+    def browse_cover_directory(self) -> None:
+        if not self.is_admin_mode:
+            return
+        initial = (
+            DEFAULT_NETWORK_ROOT if os.path.isdir(DEFAULT_NETWORK_ROOT) else "C:\\"
+        )
+        chosen = filedialog.askdirectory(
+            parent=self,
+            title="Seleccionar Carpeta con PDFs y Carátula",
+            initialdir=initial,
+        )
+        if chosen:
+            norm = os.path.normpath(chosen)
+            self.var_cover_folder_path.set(norm)
+            self.load_cover_folder(norm)
+
+    def open_cover_quick_picker_dialog(self) -> None:
+        if not self.is_admin_mode:
+            return
+        root_dir = DEFAULT_NETWORK_ROOT
+        if not os.path.isdir(root_dir):
+            messagebox.showwarning(
+                "Ruta de red no disponible",
+                f"No se pudo acceder a:\n{root_dir}",
+            )
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Seleccionar Directorio de Tuxtla Gutiérrez — Insertar Carátula")
+        dlg.geometry("760x500")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        top = ttk.Frame(dlg, padding=10)
+        top.pack(fill=tk.X)
+        ttk.Label(
+            top,
+            text="Selecciona el directorio (Doble clic para cargar sus PDFs):",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(side=tk.LEFT)
+
+        tree_f = ttk.Frame(dlg, padding=(10, 0, 10, 10))
+        tree_f.pack(fill=tk.BOTH, expand=True)
+
+        tv = ttk.Treeview(
+            tree_f, columns=("carpeta",), show="headings", selectmode="browse"
+        )
+        tv.heading("carpeta", text="Directorio en Tuxtla Gutiérrez")
+        tv.column("carpeta", width=680, anchor=tk.W)
+
+        vsb = ttk.Scrollbar(tree_f, orient=tk.VERTICAL, command=tv.yview)
+        tv.configure(yscrollcommand=vsb.set)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+        tv.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        for d_name in sorted(os.listdir(root_dir)):
+            full_p = os.path.join(root_dir, d_name)
+            if os.path.isdir(full_p):
+                tv.insert("", tk.END, values=(d_name,))
+
+        def on_choose(_event: Optional[tk.Event] = None) -> None:
+            sel = tv.selection()
+            if not sel:
+                return
+            folder_name = tv.item(sel[0], "values")[0]
+            chosen_path = os.path.normpath(os.path.join(root_dir, folder_name))
+            dlg.destroy()
+            self.var_cover_folder_path.set(chosen_path)
+            self.load_cover_folder(chosen_path)
+
+        tv.bind("<Double-1>", on_choose)
+
+        bottom = ttk.Frame(dlg, padding=10)
+        bottom.pack(fill=tk.X)
+        ttk.Button(bottom, text="Cargar Directorio", command=on_choose).pack(
+            side=tk.RIGHT, padx=4
+        )
+        ttk.Button(bottom, text="Cancelar", command=dlg.destroy).pack(side=tk.RIGHT)
+
+    def load_cover_folder_from_entry(self) -> None:
+        if not self.is_admin_mode:
+            return
+        path = self.var_cover_folder_path.get().strip()
+        if not path:
+            messagebox.showwarning("Ruta vacía", "Ingresa o selecciona un directorio.")
+            return
+        self.load_cover_folder(path)
+
+    def load_cover_folder(self, folder_path: str) -> None:
+        norm_path = os.path.normpath(folder_path)
+        if not os.path.isdir(norm_path):
+            messagebox.showerror(
+                "Directorio inválido", f"No existe el directorio:\n{norm_path}"
+            )
+            return
+
+        self.cover_folder_path = norm_path
+        self.selected_cover_pdf_path = None
+        self.selected_cover_total_pages = 0
+        self.last_cover_tree_anchor_idx = None
+        self.var_cover_page_mode.set("ALL")
+        self.var_cover_single_page.set("1")
+        self.var_cover_range_from.set("1")
+        self.var_cover_range_to.set("1")
+        self._update_cover_page_inputs_state()
+
+        self.lbl_cover_selected.config(
+            text="Carátula actual: (Ninguna seleccionada)",
+            bg="#FEF9C3",
+            fg="#854D0E",
+        )
+
+        self._refresh_cover_pdfs_tree()
+
+    def _refresh_cover_pdfs_tree(self) -> None:
+        self.tree_cover_pdfs.delete(*self.tree_cover_pdfs.get_children())
+        if not self.cover_folder_path or not os.path.isdir(self.cover_folder_path):
+            return
+
+        entries = sorted(
+            f
+            for f in os.listdir(self.cover_folder_path)
+            if f.lower().endswith(".pdf")
+            and os.path.isfile(os.path.join(self.cover_folder_path, f))
+        )
+
+        norm_cover = (
+            os.path.normcase(os.path.normpath(self.selected_cover_pdf_path))
+            if self.selected_cover_pdf_path
+            else ""
+        )
+
+        for fname in entries:
+            full_p = os.path.normpath(os.path.join(self.cover_folder_path, fname))
+            is_cov = os.path.normcase(full_p) == norm_cover
+            rol_txt = (
+                f"⭐ CARÁTULA ({self.selected_cover_total_pages} págs.)"
+                if is_cov
+                else "📄 PDF Destino"
+            )
+            self.tree_cover_pdfs.insert(
+                "",
+                tk.END,
+                iid=full_p,
+                values=(rol_txt, fname, os.path.basename(self.cover_folder_path)),
+                tags=("IS_COVER" if is_cov else "NORMAL_PDF",),
+            )
+
+        self._update_cover_selection_counter()
+
+    def _on_cover_tree_click(self, event: tk.Event) -> Optional[str]:
+        """
+        Implementa selección por rango con Shift + Clic Izquierdo excluyendo automáticamente
+        la fila marcada como Carátula.
+        """
+        row_id = self.tree_cover_pdfs.identify_row(event.y)
+        if not row_id:
+            return None
+
+        all_items = list(self.tree_cover_pdfs.get_children())
+        if row_id not in all_items:
+            return None
+
+        clicked_idx = all_items.index(row_id)
+        shift_pressed = bool(event.state & 0x0001)
+
+        if shift_pressed and self.last_cover_tree_anchor_idx is not None:
+            start_i = min(self.last_cover_tree_anchor_idx, clicked_idx)
+            end_i = max(self.last_cover_tree_anchor_idx, clicked_idx)
+            norm_cover = (
+                os.path.normcase(os.path.normpath(self.selected_cover_pdf_path))
+                if self.selected_cover_pdf_path
+                else ""
+            )
+            range_items = [
+                item_id
+                for item_id in all_items[start_i : end_i + 1]
+                if os.path.normcase(os.path.normpath(item_id)) != norm_cover
+            ]
+            self.tree_cover_pdfs.selection_set(range_items)
+            self.tree_cover_pdfs.focus(row_id)
+            self.cover_pdf_viewer.load_pdf(row_id)
+            self._update_cover_selection_counter()
+            return "break"
+
+        self.last_cover_tree_anchor_idx = clicked_idx
+        return None
+
+    def _on_cover_tree_selection_changed(
+        self, _event: Optional[tk.Event] = None
+    ) -> None:
+        sel = self.tree_cover_pdfs.selection()
+        self._update_cover_selection_counter()
+        if not sel:
+            return
+        focused = self.tree_cover_pdfs.focus()
+        target_to_preview = focused if focused in sel else sel[-1]
+        if (
+            target_to_preview
+            and os.path.isfile(target_to_preview)
+            and target_to_preview != self.cover_pdf_viewer.current_pdf_path
+        ):
+            self.cover_pdf_viewer.load_pdf(target_to_preview)
+
+    def _update_cover_selection_counter(self) -> None:
+        sel = list(self.tree_cover_pdfs.selection())
+        norm_cover = (
+            os.path.normcase(os.path.normpath(self.selected_cover_pdf_path))
+            if self.selected_cover_pdf_path
+            else ""
+        )
+        valid_targets = [
+            p
+            for p in sel
+            if os.path.normcase(os.path.normpath(p)) != norm_cover
+        ]
+        self.lbl_cov_sel_count.config(
+            text=f"PDFs destino seleccionados: {len(valid_targets)}"
+        )
+
+    def set_selected_row_as_cover(self) -> None:
+        if not self.is_admin_mode:
+            return
+        sel = self.tree_cover_pdfs.selection()
+        if not sel:
+            messagebox.showwarning(
+                "Sin selección",
+                "Selecciona primero un archivo PDF de la lista para definirlo como Carátula.",
+            )
+            return
+
+        chosen_pdf = sel[0]
+        if not os.path.isfile(chosen_pdf):
+            return
+
+        try:
+            pages_cnt = get_pdf_page_count(chosen_pdf)
+        except Exception as exc:
+            messagebox.showerror(
+                "Error al leer Carátula",
+                f"No se pudo abrir el PDF seleccionado:\n{exc}",
+            )
+            return
+
+        self.selected_cover_pdf_path = chosen_pdf
+        self.selected_cover_total_pages = pages_cnt
+        self.var_cover_page_mode.set("ALL")
+        self.var_cover_single_page.set("1")
+        self.var_cover_range_from.set("1")
+        self.var_cover_range_to.set(str(max(1, pages_cnt)))
+        self._update_cover_page_inputs_state()
+
+        fname = os.path.basename(chosen_pdf)
+        self.lbl_cover_selected.config(
+            text=f"⭐ Carátula activa: {fname} ({pages_cnt} páginas)",
+            bg="#DCFCE7",
+            fg="#166534",
+        )
+
+        self._refresh_cover_pdfs_tree()
+        self.cover_pdf_viewer.load_pdf(chosen_pdf)
+
+    def cover_select_all_excluding_cover(self) -> None:
+        if not self.is_admin_mode:
+            return
+        all_items = list(self.tree_cover_pdfs.get_children())
+        if not all_items:
+            return
+
+        norm_cover = (
+            os.path.normcase(os.path.normpath(self.selected_cover_pdf_path))
+            if self.selected_cover_pdf_path
+            else ""
+        )
+        targets = [
+            item_id
+            for item_id in all_items
+            if os.path.normcase(os.path.normpath(item_id)) != norm_cover
+        ]
+        self.tree_cover_pdfs.selection_set(targets)
+        self._update_cover_selection_counter()
+
+    def cover_deselect_all(self) -> None:
+        self.tree_cover_pdfs.selection_remove(*self.tree_cover_pdfs.selection())
+        self._update_cover_selection_counter()
+
+    def execute_cover_insertion(self) -> None:
+        if not self.is_admin_mode:
+            messagebox.showwarning(
+                "Modo Administrador Requerido",
+                "Activa primero el Modo Administrador con el PIN.",
+            )
+            return
+
+        if not self.selected_cover_pdf_path or not os.path.isfile(
+            self.selected_cover_pdf_path
+        ):
+            messagebox.showwarning(
+                "Carátula no definida",
+                "Primero selecciona un PDF de la tabla y haz clic en '⭐ Usar PDF Seleccionado en la Tabla como CARÁTULA'.",
+            )
+            return
+
+        norm_cover = os.path.normcase(
+            os.path.normpath(self.selected_cover_pdf_path)
+        )
+        selected_targets = [
+            p
+            for p in self.tree_cover_pdfs.selection()
+            if os.path.normcase(os.path.normpath(p)) != norm_cover
+        ]
+
+        if not selected_targets:
+            messagebox.showwarning(
+                "Sin PDFs destino seleccionados",
+                "Selecciona uno o más archivos PDF destino (usando Shift+Clic o el botón '☑️ Seleccionar Todo (Excluyendo Carátula)').",
+            )
+            return
+
+        mode = self.var_cover_page_mode.get()
+        try:
+            single_p = int(self.var_cover_single_page.get().strip() or "1")
+            from_p = int(self.var_cover_range_from.get().strip() or "1")
+            to_p = int(self.var_cover_range_to.get().strip() or "1")
+        except ValueError:
+            messagebox.showerror(
+                "Número de página inválido",
+                "Ingresa números enteros válidos para la selección de páginas.",
+            )
+            return
+
+        if mode == "ALL":
+            pages_desc = f"TODAS las páginas (1 a {self.selected_cover_total_pages})"
+        elif mode == "SINGLE":
+            pages_desc = f"SOLO la página {single_p}"
+        else:
+            pages_desc = f"RANGO de páginas {from_p} a {to_p}"
+
+        confirm = messagebox.askyesno(
+            "Confirmar Inserción de Carátula en PDFs",
+            f"¿Deseas insertar las páginas de la carátula al inicio de los PDFs seleccionados?\n\n"
+            f"• Archivo Carátula: {os.path.basename(self.selected_cover_pdf_path)}\n"
+            f"• Páginas a insertar: {pages_desc}\n"
+            f"• Total de PDFs destino: {len(selected_targets)} archivos (la carátula queda excluida).",
+        )
+        if not confirm:
+            return
+
+        # Cerrar el visor para liberar cualquier lectura en memoria
+        self.cover_pdf_viewer.close_pdf()
+
+        def on_prog(idx: int, total: int, msg: str) -> None:
+            self.lbl_cover_progress.config(text=f"[{idx}/{total}] {msg}")
+            self.update_idletasks()
+
+        try:
+            ok_count, err_list, inserted_pages = prepend_cover_pages_to_pdfs(
+                cover_pdf_path=self.selected_cover_pdf_path,
+                target_pdf_paths=selected_targets,
+                mode=mode,
+                single_page_1based=single_p,
+                range_from_1based=from_p,
+                range_to_1based=to_p,
+                progress_callback=on_prog,
+            )
+        except Exception as exc:
+            self.lbl_cover_progress.config(text="")
+            messagebox.showerror("Error al Insertar Carátula", str(exc))
+            return
+
+        self.lbl_cover_progress.config(text="")
+        msg_summary = (
+            f"Proceso completado.\n\n"
+            f"• PDFs actualizados con éxito: {ok_count} de {len(selected_targets)}\n"
+            f"• Páginas insertadas al inicio de cada PDF: {inserted_pages}"
+        )
+        if err_list:
+            msg_summary += "\n\nErrores:\n" + "\n".join(err_list[:10])
+            messagebox.showwarning("Resultado con Observaciones", msg_summary)
+        else:
+            messagebox.showinfo("Carátula Insertada con Éxito", msg_summary)
 
     def open_mysql_config_dialog(self) -> None:
         if not self.is_admin_mode:

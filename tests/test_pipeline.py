@@ -6,6 +6,8 @@ import os
 import tempfile
 import unittest
 
+import fitz
+from src.cover_inserter import get_pdf_page_count, prepend_cover_pages_to_pdfs
 from src.naming_engine import build_proposals, parse_folder_name, scan_directory
 from src.storage import LocalCaptureStore
 
@@ -146,6 +148,54 @@ class TestCapturaCerosPipeline(unittest.TestCase):
             )
             imported_files = store2.get_files_for_capture(imported_caps[0]["id"])
             self.assertEqual(len(imported_files), 3)
+
+    def test_cover_inserter_all_single_and_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_root:
+            cover_path = os.path.join(tmp_root, "caratula.pdf")
+            target1_path = os.path.join(tmp_root, "doc1.pdf")
+            target2_path = os.path.join(tmp_root, "doc2.pdf")
+
+            # Crear carátula de 3 páginas
+            cov_doc = fitz.open()
+            for i in range(3):
+                p = cov_doc.new_page()
+                p.insert_text((50, 50), f"Cover page {i + 1}")
+            cov_doc.save(cover_path)
+            cov_doc.close()
+
+            # Crear 2 PDFs destino de 2 páginas cada uno
+            for p_path in (target1_path, target2_path):
+                d = fitz.open()
+                for i in range(2):
+                    page = d.new_page()
+                    page.insert_text((50, 50), f"Content page {i + 1}")
+                d.save(p_path)
+                d.close()
+
+            # 1. Modo ALL (inserta las 3 páginas al inicio de doc1; excluye cover_path automáticamente)
+            ok_cnt, errs, ins_pages = prepend_cover_pages_to_pdfs(
+                cover_pdf_path=cover_path,
+                target_pdf_paths=[cover_path, target1_path],
+                mode="ALL",
+            )
+            self.assertEqual(ok_cnt, 1)
+            self.assertEqual(len(errs), 0)
+            self.assertEqual(ins_pages, 3)
+            self.assertEqual(get_pdf_page_count(target1_path), 5)
+            self.assertEqual(get_pdf_page_count(cover_path), 3)
+
+            # 2. Modo RANGE (páginas 2 a 3 en doc2 -> suma 2 páginas)
+            ok_cnt2, errs2, ins_pages2 = prepend_cover_pages_to_pdfs(
+                cover_pdf_path=cover_path,
+                target_pdf_paths=[target2_path],
+                mode="RANGE",
+                range_from_1based=2,
+                range_to_1based=3,
+            )
+            self.assertEqual(ok_cnt2, 1)
+            self.assertEqual(len(errs2), 0)
+            self.assertEqual(ins_pages2, 2)
+            self.assertEqual(get_pdf_page_count(target2_path), 4)
 
 
 if __name__ == "__main__":

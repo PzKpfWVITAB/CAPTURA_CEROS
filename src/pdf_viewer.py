@@ -1,6 +1,7 @@
 """
 Visor de páginas PDF integrado con PyMuPDF (fitz) y Pillow para Tkinter.
-Permite inspeccionar los documentos en red sin bloquear ni modificar los archivos.
+Permite inspeccionar los documentos en red sin bloquear ni modificar los archivos,
+mostrando una pantalla de carga mientras lee y renderiza el documento.
 """
 
 import io
@@ -16,10 +17,11 @@ from PIL import Image, ImageTk
 class EmbeddedPdfViewer(ttk.Frame):
     """
     Componente reutilizable de visor PDF con controles de:
-    - Navegación de páginas (Anterior / Siguiente)
-    - Zoom (- / + / Ajustar)
+    - Pantalla de carga ("Cargando PDF...") al abrir/renderizar documentos
+    - Navegación de páginas (Anterior / Siguiente + Scroll continuo automático)
+    - Zoom (- / + / Ctrl+Scroll)
     - Rotación (90° Izquierda / Derecha para leer sellos laterales)
-    - Arrastre con el ratón (Pan) y rueda del ratón (Scroll)
+    - Arrastre con el ratón (Pan)
     """
 
     def __init__(self, parent: tk.Widget) -> None:
@@ -56,7 +58,9 @@ class EmbeddedPdfViewer(ttk.Frame):
         )
         self.btn_prev.pack(side=tk.LEFT, padx=2)
 
-        self.lbl_page = ttk.Label(controls, text="Pág: 0 / 0", width=11, anchor=tk.CENTER)
+        self.lbl_page = ttk.Label(
+            controls, text="Pág: 0 / 0", width=11, anchor=tk.CENTER
+        )
         self.lbl_page.pack(side=tk.LEFT, padx=2)
 
         self.btn_next = ttk.Button(
@@ -64,7 +68,9 @@ class EmbeddedPdfViewer(ttk.Frame):
         )
         self.btn_next.pack(side=tk.LEFT, padx=2)
 
-        ttk.Separator(controls, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
+        ttk.Separator(controls, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, fill=tk.Y, padx=6
+        )
 
         ttk.Button(controls, text="🔍-", width=4, command=self.zoom_out).pack(
             side=tk.LEFT, padx=1
@@ -75,7 +81,9 @@ class EmbeddedPdfViewer(ttk.Frame):
             side=tk.LEFT, padx=1
         )
 
-        ttk.Separator(controls, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=6)
+        ttk.Separator(controls, orient=tk.VERTICAL).pack(
+            side=tk.LEFT, fill=tk.Y, padx=6
+        )
 
         ttk.Button(controls, text="↺ 90°", width=5, command=self.rotate_left).pack(
             side=tk.LEFT, padx=1
@@ -83,19 +91,19 @@ class EmbeddedPdfViewer(ttk.Frame):
         ttk.Button(controls, text="↻ 90°", width=5, command=self.rotate_right).pack(
             side=tk.LEFT, padx=1
         )
-        ttk.Button(controls, text="Externo ↗", width=9, command=self.open_external).pack(
-            side=tk.LEFT, padx=(6, 0)
-        )
+        ttk.Button(
+            controls, text="Externo ↗", width=9, command=self.open_external
+        ).pack(side=tk.LEFT, padx=(6, 0))
 
         # Lienzo con barras de desplazamiento
-        canvas_container = ttk.Frame(self)
-        canvas_container.pack(fill=tk.BOTH, expand=True)
+        self.canvas_container = ttk.Frame(self)
+        self.canvas_container.pack(fill=tk.BOTH, expand=True)
 
-        self.v_scroll = ttk.Scrollbar(canvas_container, orient=tk.VERTICAL)
-        self.h_scroll = ttk.Scrollbar(canvas_container, orient=tk.HORIZONTAL)
+        self.v_scroll = ttk.Scrollbar(self.canvas_container, orient=tk.VERTICAL)
+        self.h_scroll = ttk.Scrollbar(self.canvas_container, orient=tk.HORIZONTAL)
 
         self.canvas = tk.Canvas(
-            canvas_container,
+            self.canvas_container,
             bg="#334155",
             highlightthickness=0,
             yscrollcommand=self.v_scroll.set,
@@ -109,11 +117,51 @@ class EmbeddedPdfViewer(ttk.Frame):
         self.h_scroll.pack(side=tk.BOTTOM, fill=tk.X)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
+        # Pantallita superpuesta de carga (Loading Overlay)
+        self.loading_overlay = tk.Frame(
+            self.canvas,
+            bg="#0F172A",
+            highlightbackground="#38BDF8",
+            highlightthickness=2,
+            padx=28,
+            pady=20,
+        )
+        self.lbl_loading_title = tk.Label(
+            self.loading_overlay,
+            text="⏳ Cargando documento PDF...",
+            bg="#0F172A",
+            fg="#38BDF8",
+            font=("Segoe UI", 11, "bold"),
+        )
+        self.lbl_loading_title.pack(pady=(0, 6))
+        self.lbl_loading_sub = tk.Label(
+            self.loading_overlay,
+            text="Leyendo desde la red y renderizando página...",
+            bg="#0F172A",
+            fg="#E2E8F0",
+            font=("Segoe UI", 9),
+        )
+        self.lbl_loading_sub.pack()
+
         # Eventos de ratón para arrastrar (pan) y rueda (scroll continuo entre páginas)
         self.canvas.bind("<ButtonPress-1>", self._on_pan_start)
         self.canvas.bind("<B1-Motion>", self._on_pan_move)
         self.canvas.bind("<MouseWheel>", self._on_mousewheel)
         self.canvas.bind("<Enter>", lambda _: self.canvas.focus_set())
+
+    def _show_loading_screen(self, filename: str = "") -> None:
+        """Muestra inmediatamente la pantallita de carga centrada en el visor."""
+        if filename:
+            self.lbl_loading_sub.config(text=f"Abriendo: {filename}")
+        else:
+            self.lbl_loading_sub.config(text="Renderizando página...")
+        self.loading_overlay.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        self.loading_overlay.lift()
+        self.update_idletasks()
+
+    def _hide_loading_screen(self) -> None:
+        """Oculta la pantallita de carga."""
+        self.loading_overlay.place_forget()
 
     def _on_pan_start(self, event: tk.Event) -> None:
         self.canvas.scan_mark(event.x, event.y)
@@ -137,7 +185,6 @@ class EmbeddedPdfViewer(ttk.Frame):
         scrolling_up = event.delta > 0
 
         if scrolling_down:
-            # Si ya estamos al final de la página actual, pasar automáticamente a la siguiente página
             if bottom_frac >= 0.995:
                 if self.current_page < self.total_pages - 1:
                     self.current_page += 1
@@ -145,7 +192,6 @@ class EmbeddedPdfViewer(ttk.Frame):
             else:
                 self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         elif scrolling_up:
-            # Si ya estamos al inicio de la página actual, regresar automáticamente a la página anterior
             if top_frac <= 0.005:
                 if self.current_page > 0:
                     self.current_page -= 1
@@ -155,13 +201,17 @@ class EmbeddedPdfViewer(ttk.Frame):
 
     def load_pdf(self, pdf_path: str) -> None:
         """
-        Carga un archivo PDF en memoria para no dejar bloqueado el descriptor
-        en la carpeta de red.
+        Carga un archivo PDF en memoria mostrando antes una pantalla de carga
+        y sin dejar bloqueado el descriptor en la carpeta de red.
         """
         self.close_pdf()
         if not pdf_path or not os.path.isfile(pdf_path):
             self.lbl_filename.config(text="Archivo no encontrado")
             return
+
+        fname = os.path.basename(pdf_path)
+        self.lbl_filename.config(text=f"Cargando {fname}...")
+        self._show_loading_screen(fname)
 
         try:
             with open(pdf_path, "rb") as f:
@@ -172,12 +222,15 @@ class EmbeddedPdfViewer(ttk.Frame):
             self.total_pages = len(self.doc)
             self.current_page = 0
             self.rotation = 0
-            self.lbl_filename.config(text=os.path.basename(pdf_path))
+            self.lbl_filename.config(text=fname)
             self._render_current_page()
         except Exception as exc:
             self.lbl_filename.config(text=f"Error al abrir PDF: {exc}")
+        finally:
+            self._hide_loading_screen()
 
     def close_pdf(self) -> None:
+        self._hide_loading_screen()
         if self.doc is not None:
             try:
                 self.doc.close()
@@ -221,7 +274,9 @@ class EmbeddedPdfViewer(ttk.Frame):
             state=tk.NORMAL if self.current_page > 0 else tk.DISABLED
         )
         self.btn_next.config(
-            state=tk.NORMAL if self.current_page < self.total_pages - 1 else tk.DISABLED
+            state=tk.NORMAL
+            if self.current_page < self.total_pages - 1
+            else tk.DISABLED
         )
 
     def prev_page(self) -> None:
