@@ -5,8 +5,10 @@ Ubicación: C:\laragon\www\CAPTURA_CEROS
 """
 
 import os
+import queue
+import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
 from typing import Any, Dict, List, Optional
 
 from src.cover_inserter import get_pdf_page_count, prepend_cover_pages_to_pdfs
@@ -73,6 +75,9 @@ class CapturaCerosApp(tk.Tk):
         self.selected_cover_pdf_path: Optional[str] = None
         self.selected_cover_total_pages: int = 0
         self.last_cover_tree_anchor_idx: Optional[int] = None
+        self.cover_task_running: bool = False
+        self.cover_cancel_requested: bool = False
+        self.cover_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
 
         self._configure_styles()
         self._build_layout()
@@ -853,21 +858,44 @@ class CapturaCerosApp(tk.Tk):
             "<<TreeviewSelect>>", self._on_cover_tree_selection_changed
         )
 
-        # Barra inferior de ejecución de inserción de carátula
+        # Barra inferior de ejecución asíncrona de inserción de carátula
         exec_bar = ttk.Frame(left_cover_pane, padding=(0, 8, 0, 0))
         exec_bar.pack(fill=tk.X, side=tk.BOTTOM)
 
+        prog_box = ttk.Frame(exec_bar)
+        prog_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
+
+        self.cover_progressbar = ttk.Progressbar(
+            prog_box, orient=tk.HORIZONTAL, mode="determinate"
+        )
+        self.cover_progressbar.pack(fill=tk.X, side=tk.TOP, pady=(0, 3))
+
         self.lbl_cover_progress = ttk.Label(
-            exec_bar,
-            text="",
-            font=("Segoe UI", 9, "italic"),
+            prog_box,
+            text="Listo para procesar.",
+            font=("Segoe UI", 8, "italic"),
             foreground="#0369A1",
         )
-        self.lbl_cover_progress.pack(side=tk.LEFT)
+        self.lbl_cover_progress.pack(anchor=tk.W, side=tk.TOP)
+
+        self.btn_cancel_cover_insert = tk.Button(
+            exec_bar,
+            text="⏹ Cancelar",
+            bg="#B91C1C",
+            fg="#FFFFFF",
+            activebackground="#991B1B",
+            activeforeground="#FFFFFF",
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=6,
+            state=tk.DISABLED,
+            command=self.cancel_cover_insertion,
+        )
+        self.btn_cancel_cover_insert.pack(side=tk.RIGHT, padx=(6, 0))
 
         self.btn_execute_cover_insert = tk.Button(
             exec_bar,
-            text="📑 INSERTAR PÁGINAS DE CARÁTULA AL INICIO DE LOS PDFs SELECCIONADOS",
+            text="📑 INSERTAR CARÁTULA EN PDFs SELECCIONADOS",
             bg="#15803D",
             fg="#FFFFFF",
             activebackground="#166534",
@@ -1282,6 +1310,7 @@ class CapturaCerosApp(tk.Tk):
             self.btn_cov_select_all.config(state=tk.DISABLED)
             self.btn_cov_clear_sel.config(state=tk.DISABLED)
             self.btn_execute_cover_insert.config(state=tk.DISABLED, bg="#94A3B8")
+            self.btn_cancel_cover_insert.config(state=tk.DISABLED)
 
     # =========================================================================
     # LÓGICA DE PESTAÑA 2: INSERTAR CARÁTULA EN PDFs (SOLO ADMINISTRADOR)
@@ -1590,11 +1619,50 @@ class CapturaCerosApp(tk.Tk):
         self.tree_cover_pdfs.selection_remove(*self.tree_cover_pdfs.selection())
         self._update_cover_selection_counter()
 
+    def cancel_cover_insertion(self) -> None:
+        if self.cover_task_running:
+            self.cover_cancel_requested = True
+            self.lbl_cover_progress.config(
+                text="⏳ Cancelando al terminar el archivo actual...",
+                foreground="#B91C1C",
+            )
+            self.btn_cancel_cover_insert.config(state=tk.DISABLED)
+
+    def _set_cover_controls_busy(self, busy: bool) -> None:
+        state_val = tk.DISABLED if busy else tk.NORMAL
+        self.ent_cover_folder.config(state=state_val)
+        self.btn_cover_browse.config(state=state_val)
+        self.btn_cover_quick.config(state=state_val)
+        self.btn_cover_reload.config(state=state_val)
+        self.btn_set_as_cover.config(state=state_val)
+        self.rb_cov_all.config(state=state_val)
+        self.rb_cov_single.config(state=state_val)
+        self.rb_cov_range.config(state=state_val)
+        self.btn_cov_select_all.config(state=state_val)
+        self.btn_cov_clear_sel.config(state=state_val)
+        if busy:
+            self.ent_cov_single.config(state=tk.DISABLED)
+            self.ent_cov_from.config(state=tk.DISABLED)
+            self.ent_cov_to.config(state=tk.DISABLED)
+            self.btn_execute_cover_insert.config(state=tk.DISABLED, bg="#94A3B8")
+            self.btn_cancel_cover_insert.config(state=tk.NORMAL)
+        else:
+            self._update_cover_page_inputs_state()
+            self.btn_execute_cover_insert.config(state=tk.NORMAL, bg="#15803D")
+            self.btn_cancel_cover_insert.config(state=tk.DISABLED)
+
     def execute_cover_insertion(self) -> None:
         if not self.is_admin_mode:
             messagebox.showwarning(
                 "Modo Administrador Requerido",
                 "Activa primero el Modo Administrador con el PIN.",
+            )
+            return
+
+        if self.cover_task_running:
+            messagebox.showinfo(
+                "Proceso en curso",
+                "Ya se están insertando carátulas en segundo plano. Espera a que termine o presiona '⏹ Cancelar'.",
             )
             return
 
@@ -1643,7 +1711,7 @@ class CapturaCerosApp(tk.Tk):
             pages_desc = f"RANGO de páginas {from_p} a {to_p}"
 
         confirm = messagebox.askyesno(
-            "Confirmar Inserción de Carátula en PDFs",
+            "Confirmar Inserción Asíncrona de Carátula en PDFs",
             f"¿Deseas insertar las páginas de la carátula al inicio de los PDFs seleccionados?\n\n"
             f"• Archivo Carátula: {os.path.basename(self.selected_cover_pdf_path)}\n"
             f"• Páginas a insertar: {pages_desc}\n"
@@ -1652,39 +1720,170 @@ class CapturaCerosApp(tk.Tk):
         if not confirm:
             return
 
-        # Cerrar el visor para liberar cualquier lectura en memoria
+        # Cerrar el visor para liberar cualquier descriptor abierto
         self.cover_pdf_viewer.close_pdf()
 
-        def on_prog(idx: int, total: int, msg: str) -> None:
-            self.lbl_cover_progress.config(text=f"[{idx}/{total}] {msg}")
-            self.update_idletasks()
-
-        try:
-            ok_count, err_list, inserted_pages = prepend_cover_pages_to_pdfs(
-                cover_pdf_path=self.selected_cover_pdf_path,
-                target_pdf_paths=selected_targets,
-                mode=mode,
-                single_page_1based=single_p,
-                range_from_1based=from_p,
-                range_to_1based=to_p,
-                progress_callback=on_prog,
-            )
-        except Exception as exc:
-            self.lbl_cover_progress.config(text="")
-            messagebox.showerror("Error al Insertar Carátula", str(exc))
-            return
-
-        self.lbl_cover_progress.config(text="")
-        msg_summary = (
-            f"Proceso completado.\n\n"
-            f"• PDFs actualizados con éxito: {ok_count} de {len(selected_targets)}\n"
-            f"• Páginas insertadas al inicio de cada PDF: {inserted_pages}"
+        # Preparar estado asíncrono y bloquear botones de edición mientras corre el worker
+        self.cover_task_running = True
+        self.cover_cancel_requested = False
+        self._set_cover_controls_busy(True)
+        self.cover_progressbar["maximum"] = max(1, len(selected_targets))
+        self.cover_progressbar["value"] = 0
+        self.lbl_cover_progress.config(
+            text=f"Iniciando lote de {len(selected_targets)} PDFs...",
+            foreground="#0369A1",
         )
-        if err_list:
-            msg_summary += "\n\nErrores:\n" + "\n".join(err_list[:10])
-            messagebox.showwarning("Resultado con Observaciones", msg_summary)
-        else:
-            messagebox.showinfo("Carátula Insertada con Éxito", msg_summary)
+
+        # Vaciar cola previa
+        while not self.cover_queue.empty():
+            try:
+                self.cover_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        cover_path_arg = self.selected_cover_pdf_path
+        targets_arg = list(selected_targets)
+
+        def worker_task() -> None:
+            def on_prog(idx: int, total: int, msg: str) -> None:
+                self.cover_queue.put(
+                    {"type": "progress", "idx": idx, "total": total, "msg": msg}
+                )
+
+            def is_cancelled() -> bool:
+                return self.cover_cancel_requested
+
+            try:
+                ok_count, err_list, inserted_pages = prepend_cover_pages_to_pdfs(
+                    cover_pdf_path=cover_path_arg,
+                    target_pdf_paths=targets_arg,
+                    mode=mode,
+                    single_page_1based=single_p,
+                    range_from_1based=from_p,
+                    range_to_1based=to_p,
+                    progress_callback=on_prog,
+                    cancel_check=is_cancelled,
+                )
+                self.cover_queue.put(
+                    {
+                        "type": "done",
+                        "ok_count": ok_count,
+                        "total_count": len(targets_arg),
+                        "err_list": err_list,
+                        "inserted_pages": inserted_pages,
+                    }
+                )
+            except Exception as fatal_exc:
+                self.cover_queue.put(
+                    {"type": "fatal_error", "error": str(fatal_exc)}
+                )
+
+        threading.Thread(target=worker_task, daemon=True).start()
+        self.after(60, self._poll_cover_worker_queue)
+
+    def _poll_cover_worker_queue(self) -> None:
+        try:
+            while True:
+                item = self.cover_queue.get_nowait()
+                msg_type = item.get("type")
+
+                if msg_type == "progress":
+                    idx = item["idx"]
+                    total = item["total"]
+                    msg = item["msg"]
+                    self.cover_progressbar["maximum"] = max(1, total)
+                    self.cover_progressbar["value"] = idx
+                    self.lbl_cover_progress.config(
+                        text=f"[{idx}/{total}] {msg}", foreground="#0369A1"
+                    )
+
+                elif msg_type == "fatal_error":
+                    self.cover_task_running = False
+                    self._set_cover_controls_busy(False)
+                    self.cover_progressbar["value"] = 0
+                    self.lbl_cover_progress.config(
+                        text="Error crítico al iniciar inserción.",
+                        foreground="#B91C1C",
+                    )
+                    messagebox.showerror(
+                        "Error al Insertar Carátula", item.get("error", "Error desconocido")
+                    )
+                    return
+
+                elif msg_type == "done":
+                    self.cover_task_running = False
+                    self._set_cover_controls_busy(False)
+                    ok_count = item["ok_count"]
+                    total_count = item["total_count"]
+                    err_list: List[str] = item["err_list"]
+                    inserted_pages = item["inserted_pages"]
+
+                    self.cover_progressbar["value"] = total_count
+                    self.lbl_cover_progress.config(
+                        text=f"Completado: {ok_count}/{total_count} exitosos ({len(err_list)} errores).",
+                        foreground="#15803D" if not err_list else "#B91C1C",
+                    )
+
+                    if err_list:
+                        self._show_cover_errors_dialog(
+                            ok_count, total_count, inserted_pages, err_list
+                        )
+                    else:
+                        messagebox.showinfo(
+                            "Carátula Insertada con Éxito",
+                            f"Proceso completado sin errores.\n\n"
+                            f"• PDFs actualizados con éxito: {ok_count} de {total_count}\n"
+                            f"• Páginas insertadas al inicio de cada PDF: {inserted_pages}",
+                        )
+                    return
+        except queue.Empty:
+            pass
+
+        if self.cover_task_running:
+            self.after(60, self._poll_cover_worker_queue)
+
+    def _show_cover_errors_dialog(
+        self,
+        ok_count: int,
+        total_count: int,
+        inserted_pages: int,
+        err_list: List[str],
+    ) -> None:
+        """Muestra una ventana detallada y desplazable con todos los errores ocurridos durante el lote."""
+        dlg = tk.Toplevel(self)
+        dlg.title("Reporte de Resultados y Errores — Inserción de Carátula")
+        dlg.geometry("680x440")
+        dlg.transient(self)
+        dlg.grab_set()
+
+        frame = ttk.Frame(dlg, padding=14)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            frame,
+            text=f"⚠️ Proceso finalizado con observaciones ({len(err_list)} incidencias)",
+            font=("Segoe UI", 10, "bold"),
+            foreground="#B91C1C",
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        ttk.Label(
+            frame,
+            text=(
+                f"• Archivos actualizados correctamente: {ok_count} de {total_count}\n"
+                f"• Páginas insertadas por archivo exitoso: {inserted_pages}\n"
+                f"• Archivos con error o no modificados: {len(err_list)}"
+            ),
+            font=("Segoe UI", 9),
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        txt_area = scrolledtext.ScrolledText(
+            frame, font=("Consolas", 9), wrap=tk.WORD, height=14
+        )
+        txt_area.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+        txt_area.insert(tk.END, "\n".join(err_list))
+        txt_area.config(state=tk.DISABLED)
+
+        ttk.Button(frame, text="Cerrar", command=dlg.destroy).pack(side=tk.RIGHT)
 
     def open_mysql_config_dialog(self) -> None:
         if not self.is_admin_mode:
