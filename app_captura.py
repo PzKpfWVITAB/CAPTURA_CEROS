@@ -1299,15 +1299,16 @@ class CapturaCerosApp(tk.Tk):
             self.var_allow_alpha_tomo.set(False)
             self.var_allow_alpha_frac.set(False)
 
+        # El año siempre es editable: se auto-rellena con el de la carpeta, pero el capturista puede cambiarlo
+        self.ent_anio.config(state=tk.NORMAL)
         if analysis.year_is_zero:
-            self.ent_anio.config(state=tk.NORMAL)
             self.lbl_anio_hint.config(
                 text="Carpeta en 0000: Captura el año", foreground="#DC2626"
             )
         else:
-            self.ent_anio.config(state="readonly")
             self.lbl_anio_hint.config(
-                text=f"Fijo de carpeta ({analysis.detected_year})", foreground="#0284C7"
+                text=f"Auto-rellenado ({analysis.detected_year}) - Editable",
+                foreground="#0284C7",
             )
 
         self._on_fields_changed()
