@@ -1,0 +1,36 @@
+# Entornos virtuales de Python
+.venv/
+venv/
+env/
+ENV/
+
+# Caché y compilados de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Artefactos de compilación de PyInstaller
+build/
+dist/
+*.spec
+*.exe
+
+# Datos locales de captura y bases de datos (SQLite / respaldos locales)
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.json
+data/*.csv
+
+# Archivos temporales y de sistema operativo
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
+*.tmp
+
+# IDEs y editores
+.vscode/
+.idea/
+*.swp
