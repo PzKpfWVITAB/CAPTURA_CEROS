@@ -10,13 +10,14 @@ __pycache__/
 *$py.class
 *.so
 
-# Artefactos de compilación de PyInstaller
+# Artefactos de compilación de PyInstaller y carpeta portable
 build/
 dist/
+CAPTURA_CEROS_PORTABLE/
 *.spec
 *.exe
 
-# Datos locales de captura y bases de datos (SQLite / respaldos locales)
+# Datos locales de captura y bases de datos (SQLite / respaldos locales / credenciales MySQL)
 data/*.db
 data/*.db-journal
 data/*.db-wal

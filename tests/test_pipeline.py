@@ -91,9 +91,16 @@ class TestCapturaCerosPipeline(unittest.TestCase):
             self.assertTrue(os.path.isdir(folder_path))
             self.assertTrue(os.path.isfile(zero_pdf_1))
 
-            # Aplicar cambios
-            ok, msg = store.apply_capture_changes(cid)
+            # Aplicar cambios (sin requerir servidor MySQL activo en test unitario aislado)
+            ok, msg = store.apply_capture_changes(cid, require_mysql=False)
             self.assertTrue(ok, msg)
+
+            # Verificar que se generaron los hashes SHA-256 y los UUIDs
+            applied_files = store.get_files_for_capture(cid)
+            target_applied = [f for f in applied_files if f["is_target_zero"] == 1]
+            self.assertEqual(len(target_applied), 2)
+            self.assertEqual(len(target_applied[0]["file_hash"]), 64)
+            self.assertTrue(len(target_applied[0]["file_uuid"]) >= 32)
 
             new_folder_path = os.path.join(tmp_root, prop_folder)
             self.assertTrue(os.path.isdir(new_folder_path))
@@ -119,6 +126,26 @@ class TestCapturaCerosPipeline(unittest.TestCase):
             self.assertTrue(os.path.isfile(zero_pdf_1))
             self.assertTrue(os.path.isfile(zero_pdf_2))
             self.assertTrue(os.path.isfile(non_zero_pdf))
+
+            # Probar exportación e importación JSON en una base de datos limpia
+            exported_json = os.path.join(tmp_root, "export_test.json")
+            store.export_backup_json(exported_json)
+            self.assertTrue(os.path.isfile(exported_json))
+
+            db_file_2 = os.path.join(tmp_root, "test_capturas_2.db")
+            store2 = LocalCaptureStore(db_path=db_file_2)
+            ins, upd, skp = store2.import_backup_json(exported_json)
+            self.assertEqual(ins, 1)
+            self.assertEqual(upd, 0)
+            self.assertEqual(skp, 0)
+            imported_caps = store2.get_all_captures()
+            self.assertEqual(len(imported_caps), 1)
+            self.assertEqual(
+                imported_caps[0]["proposed_folder_name"],
+                "01_02_05_01_AUXILIAR_03_00_1985_REVISAR",
+            )
+            imported_files = store2.get_files_for_capture(imported_caps[0]["id"])
+            self.assertEqual(len(imported_files), 3)
 
 
 if __name__ == "__main__":
