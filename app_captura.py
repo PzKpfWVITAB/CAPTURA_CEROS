@@ -307,11 +307,19 @@ class CapturaCerosApp(tk.Tk):
                 grid_f, text=sub_txt, font=("Segoe UI", 7), foreground="#64748B"
             ).grid(row=1, column=col_idx, sticky=tk.W, padx=4, pady=(0, 4))
 
+        # Validadores en vivo por pulsación de tecla (validate="key")
+        vcmd_num2 = (self.register(self._validate_numeric_2digits), "%P")
+        vcmd_num4 = (self.register(self._validate_numeric_4digits), "%P")
+        vcmd_tomo = (self.register(self._validate_tomo_input), "%P")
+        vcmd_frac = (self.register(self._validate_frac_input), "%P")
+
         self.ent_delegacion = ttk.Entry(
             grid_f,
             textvariable=self.var_delegacion,
             width=9,
             font=("Consolas", 11, "bold"),
+            validate="key",
+            validatecommand=vcmd_num2,
         )
         self.ent_delegacion.grid(row=2, column=0, sticky=tk.EW, padx=4)
 
@@ -320,6 +328,8 @@ class CapturaCerosApp(tk.Tk):
             textvariable=self.var_seccion,
             width=9,
             font=("Consolas", 11, "bold"),
+            validate="key",
+            validatecommand=vcmd_num2,
         )
         self.ent_seccion.grid(row=2, column=1, sticky=tk.EW, padx=4)
 
@@ -328,6 +338,8 @@ class CapturaCerosApp(tk.Tk):
             textvariable=self.var_libro,
             width=9,
             font=("Consolas", 11, "bold"),
+            validate="key",
+            validatecommand=vcmd_num2,
         )
         self.ent_libro.grid(row=2, column=2, sticky=tk.EW, padx=4)
 
@@ -336,6 +348,8 @@ class CapturaCerosApp(tk.Tk):
             textvariable=self.var_tomo,
             width=14,
             font=("Consolas", 11, "bold"),
+            validate="key",
+            validatecommand=vcmd_tomo,
         )
         self.ent_tomo.grid(row=2, column=3, sticky=tk.EW, padx=4)
 
@@ -344,6 +358,8 @@ class CapturaCerosApp(tk.Tk):
             textvariable=self.var_volumen,
             width=9,
             font=("Consolas", 11, "bold"),
+            validate="key",
+            validatecommand=vcmd_num2,
         )
         self.ent_volumen.grid(row=2, column=4, sticky=tk.EW, padx=4)
 
@@ -352,6 +368,8 @@ class CapturaCerosApp(tk.Tk):
             textvariable=self.var_fraccionamiento,
             width=18,
             font=("Consolas", 11, "bold"),
+            validate="key",
+            validatecommand=vcmd_frac,
         )
         self.ent_fraccionamiento.grid(row=2, column=5, sticky=tk.EW, padx=4)
 
@@ -360,6 +378,8 @@ class CapturaCerosApp(tk.Tk):
             textvariable=self.var_anio,
             width=9,
             font=("Consolas", 11, "bold"),
+            validate="key",
+            validatecommand=vcmd_num4,
         )
         self.ent_anio.grid(row=2, column=6, sticky=tk.EW, padx=4)
 
@@ -400,7 +420,7 @@ class CapturaCerosApp(tk.Tk):
             grid_f,
             text="Alfanumérico opc.",
             variable=self.var_allow_alpha_tomo,
-            command=self._on_fields_changed,
+            command=self._on_toggle_alpha_tomo,
         )
         chk_tomo.grid(row=3, column=3, sticky=tk.W, padx=4, pady=(4, 0))
 
@@ -408,7 +428,7 @@ class CapturaCerosApp(tk.Tk):
             grid_f,
             text="Alfanumérico opc.",
             variable=self.var_allow_alpha_frac,
-            command=self._on_fields_changed,
+            command=self._on_toggle_alpha_frac,
         )
         chk_frac.grid(row=3, column=5, sticky=tk.W, padx=4, pady=(4, 0))
 
@@ -1760,6 +1780,52 @@ class CapturaCerosApp(tk.Tk):
     # =========================================================================
     # LÓGICA DE CAPTURA Y PREVISUALIZACIÓN
     # =========================================================================
+    def _validate_numeric_2digits(self, proposed_text: str) -> bool:
+        """Restringe el campo a solo números y máximo 2 dígitos."""
+        if proposed_text == "":
+            return True
+        return proposed_text.isdigit() and len(proposed_text) <= 2
+
+    def _validate_numeric_4digits(self, proposed_text: str) -> bool:
+        """Restringe el campo Año a solo números y máximo 4 dígitos."""
+        if proposed_text == "":
+            return True
+        return proposed_text.isdigit() and len(proposed_text) <= 4
+
+    def _validate_tomo_input(self, proposed_text: str) -> bool:
+        """
+        Si 'Alfanumérico opc.' en Tomo NO está activado, impide escribir letras o más de 2 dígitos.
+        """
+        if proposed_text == "":
+            return True
+        if self.var_allow_alpha_tomo.get():
+            return True
+        return proposed_text.isdigit() and len(proposed_text) <= 2
+
+    def _validate_frac_input(self, proposed_text: str) -> bool:
+        """
+        Si 'Alfanumérico opc.' en Fraccionamiento NO está activado, impide escribir letras o más de 2 dígitos.
+        """
+        if proposed_text == "":
+            return True
+        if self.var_allow_alpha_frac.get():
+            return True
+        return proposed_text.isdigit() and len(proposed_text) <= 2
+
+    def _on_toggle_alpha_tomo(self) -> None:
+        if not self.var_allow_alpha_tomo.get():
+            digits = "".join(c for c in self.var_tomo.get() if c.isdigit())[:2]
+            self.var_tomo.set(digits.zfill(2) if digits else "00")
+        self._on_fields_changed()
+
+    def _on_toggle_alpha_frac(self) -> None:
+        if not self.var_allow_alpha_frac.get():
+            digits = "".join(
+                c for c in self.var_fraccionamiento.get() if c.isdigit()
+            )[:2]
+            self.var_fraccionamiento.set(digits.zfill(2) if digits else "00")
+        self._on_fields_changed()
+
     def _pad_var(self, var: tk.StringVar, width: int, allow_alpha: bool) -> None:
         raw = var.get().strip()
         if not raw:
@@ -1775,6 +1841,8 @@ class CapturaCerosApp(tk.Tk):
                 var.set(digits_only.zfill(width))
 
     def reset_fields_to_zero(self) -> None:
+        self.var_allow_alpha_tomo.set(False)
+        self.var_allow_alpha_frac.set(False)
         self.var_delegacion.set("01")
         self.var_seccion.set("00")
         self.var_libro.set("00")
@@ -1788,6 +1856,8 @@ class CapturaCerosApp(tk.Tk):
     def clear_capture_form_completely(self) -> None:
         """Limpia por completo el formulario, la tabla y el visor PDF tras guardar una captura."""
         self.current_analysis = None
+        self.var_allow_alpha_tomo.set(False)
+        self.var_allow_alpha_frac.set(False)
         self.var_folder_path.set("")
         self.var_delegacion.set("01")
         self.var_seccion.set("00")
@@ -1798,8 +1868,6 @@ class CapturaCerosApp(tk.Tk):
         self.var_anio.set("0000")
         self.var_suffix.set("REVISAR")
         self.var_notes.set("")
-        self.var_allow_alpha_tomo.set(False)
-        self.var_allow_alpha_frac.set(False)
 
         self.ent_anio.config(state=tk.NORMAL)
         self.lbl_anio_hint.config(text="Tomado de carpeta", foreground="#0284C7")
@@ -2018,6 +2086,13 @@ class CapturaCerosApp(tk.Tk):
 
         saved = self.store.get_capture_by_path(analysis.folder_path)
         if saved:
+            self.var_allow_alpha_tomo.set(
+                not saved["tomo"].isdigit() or len(saved["tomo"]) > 2
+            )
+            self.var_allow_alpha_frac.set(
+                not saved["fraccionamiento"].isdigit()
+                or len(saved["fraccionamiento"]) > 2
+            )
             self.var_delegacion.set(saved["delegacion"])
             self.var_seccion.set(saved["seccion"])
             self.var_libro.set(saved["libro"])
@@ -2027,9 +2102,9 @@ class CapturaCerosApp(tk.Tk):
             self.var_anio.set(saved["anio"])
             self.var_suffix.set(saved["suffix"])
             self.var_notes.set(saved["notes"] or "")
-            self.var_allow_alpha_tomo.set(not saved["tomo"].isdigit())
-            self.var_allow_alpha_frac.set(not saved["fraccionamiento"].isdigit())
         else:
+            self.var_allow_alpha_tomo.set(False)
+            self.var_allow_alpha_frac.set(False)
             self.var_delegacion.set(analysis.delegacion or "01")
             self.var_seccion.set("00")
             self.var_libro.set("00")
@@ -2039,8 +2114,6 @@ class CapturaCerosApp(tk.Tk):
             self.var_anio.set(analysis.detected_year)
             self.var_suffix.set(analysis.detected_suffix)
             self.var_notes.set("")
-            self.var_allow_alpha_tomo.set(False)
-            self.var_allow_alpha_frac.set(False)
 
         # El año siempre es editable: se auto-rellena con el de la carpeta, pero el capturista puede cambiarlo
         self.ent_anio.config(state=tk.NORMAL)
