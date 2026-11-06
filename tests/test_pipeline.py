@@ -197,6 +197,97 @@ class TestCapturaCerosPipeline(unittest.TestCase):
             self.assertEqual(ins_pages2, 2)
             self.assertEqual(get_pdf_page_count(target2_path), 4)
 
+    def test_individual_and_bulk_selection_no_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_root:
+            folder_path = os.path.join(tmp_root, "01_00_00_00_00_00_1990_REVISAR")
+            os.makedirs(folder_path)
+
+            # 4 tipos de archivos:
+            # 1. Campos en 00 y año 0000
+            p1 = os.path.join(folder_path, "01_00_00_00_00_00_0000_0001_00.pdf")
+            # 2. Campos en 00 y año 1990
+            p2 = os.path.join(folder_path, "01_00_00_00_00_00_1990_0002_00.pdf")
+            # 3. Campos con datos y año 0000
+            p3 = os.path.join(folder_path, "01_01_02_01_00_00_0000_0003_00.pdf")
+            # 4. Campos con datos y año 1988 (preexistente)
+            p4 = os.path.join(folder_path, "01_03_04_02_00_00_1988_0004_00.pdf")
+
+            for p in (p1, p2, p3, p4):
+                with open(p, "wb") as f:
+                    f.write(b"%PDF-1.4 dummy content")
+
+            analysis = scan_directory(folder_path)
+            self.assertEqual(len(analysis.all_pdfs), 4)
+
+            # Por defecto, los que tienen campos en 0 o año 0 (p1, p2, p3) están pre-seleccionados:
+            self.assertEqual(len(analysis.pdfs_to_rename), 3)
+            self.assertEqual(len(analysis.pdfs_ignored), 1)
+
+            # 1. Deseleccionar todos
+            analysis.deselect_all()
+            self.assertEqual(len(analysis.pdfs_to_rename), 0)
+            self.assertEqual(len(analysis.pdfs_ignored), 4)
+
+            # 2. Seleccionar solo los de ceros / año 0
+            analysis.select_only_zeros()
+            self.assertEqual(len(analysis.pdfs_to_rename), 3)
+
+            # 3. Seleccionar todos (incluyendo el archivo con datos preexistentes para evitar bloqueos)
+            analysis.select_all()
+            self.assertEqual(len(analysis.pdfs_to_rename), 4)
+            self.assertEqual(len(analysis.pdfs_ignored), 0)
+
+            # 4. Generar propuestas con todos seleccionados
+            prop_folder, updated = build_proposals(
+                analysis,
+                delegacion="01",
+                seccion="05",
+                libro="02",
+                tomo="01",
+                volumen="00",
+                fraccionamiento="00",
+                anio="1990",
+                suffix="REVISAR",
+            )
+            self.assertEqual(prop_folder, "01_05_02_01_00_00_1990_REVISAR")
+            self.assertEqual(len(updated), 4)
+
+            # Verificar que el PDF preexistente (p4) toma los nuevos campos pero conserva inscripción y bis intactos
+            p4_prop = [u for u in updated if u.original_name == "01_03_04_02_00_00_1988_0004_00.pdf"][0]
+            self.assertEqual(p4_prop.proposed_name, "01_05_02_01_00_00_1990_0004_00.pdf")
+
+            # 5. Guardar captura y aplicar cambios físicos
+            db_file = os.path.join(tmp_root, "test_sel.db")
+            store = LocalCaptureStore(db_path=db_file)
+            cid = store.save_capture(
+                original_folder_path=analysis.folder_path,
+                original_folder_name=analysis.folder_name,
+                proposed_folder_name=prop_folder,
+                delegacion="01",
+                seccion="05",
+                libro="02",
+                tomo="01",
+                volumen="00",
+                fraccionamiento="00",
+                anio="1990",
+                suffix="REVISAR",
+                pdfs_to_rename=analysis.pdfs_to_rename,
+                pdfs_ignored=analysis.pdfs_ignored,
+                notes="Prueba seleccion individual y total",
+            )
+
+            ok, msg = store.apply_capture_changes(cid, require_mysql=False)
+            self.assertTrue(ok, msg)
+
+            new_folder_path = os.path.join(tmp_root, prop_folder)
+            self.assertTrue(os.path.isdir(new_folder_path))
+            self.assertTrue(os.path.isfile(os.path.join(new_folder_path, "01_05_02_01_00_00_1990_0004_00.pdf")))
+
+            # 6. Rollback
+            rb_ok, rb_msg = store.rollback_capture_changes(cid)
+            self.assertTrue(rb_ok, rb_msg)
+            self.assertTrue(os.path.isfile(p4))
+
 
 if __name__ == "__main__":
     unittest.main()

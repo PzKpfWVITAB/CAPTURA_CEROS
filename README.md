@@ -76,10 +76,13 @@ CREATE TABLE IF NOT EXISTS `directorios_aplicados` (
 ### Fase 1: Capturistas (Modo Capturista — 100% Local)
 1. El capturista ejecuta **`CAPTURA_CEROS.exe`**. Por defecto arranca en **Modo Capturista** (los botones de cambios físicos y MySQL están bloqueados).
 2. Selecciona un directorio individual, visualiza el PDF en el visor lateral (con scroll continuo de páginas, zoom y rotación) y captura `Sección`, `Libro`, `Tomo`, `Volumen`, `Fraccionamiento` (y `Año` si la carpeta tenía `0000`).
-3. Al presionar **💾 GUARDAR CAPTURA LOCALMENTE**:
+3. **Selección Flexible de PDFs para Renombrar**:
+   - Cuenta con botones rápidos: **`☑ Seleccionar Todos`**, **`⚡ Solo Año 0 / En Ceros`** y **`☐ Deseleccionar Todos`**.
+   - Permite seleccionar o alternar archivos de forma individual haciendo clic en la columna *Acción*, doble clic en la fila o presionando la barra espaciadora (`Espacio`). De esta forma no existen bloqueos si hay archivos con formatos especiales o datos mixtos.
+4. Al presionar **💾 GUARDAR CAPTURA LOCALMENTE**:
    - Se asigna un **`folder_uuid`** al directorio y un **`file_uuid`** único a cada PDF.
    - Se limpia el formulario automáticamente para capturar la siguiente carpeta.
-4. Al finalizar su turno, el capturista va a la Pestaña 2 y presiona **📄 Exportar Respaldo JSON (Para entregar)**, entregándote su archivo `.json`.
+5. Al finalizar su turno, el capturista va a la Pestaña 3 y presiona **📄 Exportar Respaldo JSON (Para entregar)**, entregándote su archivo `.json`.
 
 ### Fase 2: Revisión y Aplicación Física (Modo Administrador)
 1. En tu equipo, abres **`CAPTURA_CEROS.exe`** e importas los archivos `.json` de los capturistas con el botón **📥 Importar JSON (Recibir capturas)** (conservando intactos todos los `UUID`).

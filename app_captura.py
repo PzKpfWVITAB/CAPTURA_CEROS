@@ -530,11 +530,11 @@ class CapturaCerosApp(tk.Tk):
         files_frame.pack(fill=tk.BOTH, expand=True)
 
         summary_bar = ttk.Frame(files_frame)
-        summary_bar.pack(fill=tk.X, pady=(0, 6))
+        summary_bar.pack(fill=tk.X, pady=(0, 4))
 
         self.lbl_files_summary = ttk.Label(
             summary_bar,
-            text="En ceros a renombrar: 0   |   Con datos (Ignorados): 0",
+            text="PDFs a Renombrar: 0   |   Ignorados (Intactos): 0   |   Total: 0",
             font=("Segoe UI", 9, "bold"),
             foreground="#1E293B",
         )
@@ -546,7 +546,7 @@ class CapturaCerosApp(tk.Tk):
         ttk.Label(filter_box, text="Mostrar:").pack(side=tk.LEFT, padx=4)
         for txt, val in [
             ("Todos", "TODOS"),
-            ("Solo en Ceros (Renombrar)", "CEROS"),
+            ("Solo a Renombrar", "CEROS"),
             ("Solo Ignorados", "IGNORADOS"),
         ]:
             ttk.Radiobutton(
@@ -557,27 +557,62 @@ class CapturaCerosApp(tk.Tk):
                 command=self._populate_files_preview_tree,
             ).pack(side=tk.LEFT, padx=3)
 
+        # Barra de selección individual y por lotes sin bloqueos
+        sel_bar = ttk.Frame(files_frame)
+        sel_bar.pack(fill=tk.X, pady=(0, 6))
+
+        ttk.Button(
+            sel_bar,
+            text="☑ Seleccionar Todos",
+            command=self.select_all_pdfs_for_rename,
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        ttk.Button(
+            sel_bar,
+            text="⚡ Solo Año 0 / En Ceros",
+            command=self.select_only_zero_pdfs_for_rename,
+        ).pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(
+            sel_bar,
+            text="☐ Deseleccionar Todos",
+            command=self.deselect_all_pdfs_for_rename,
+        ).pack(side=tk.LEFT, padx=4)
+
+        ttk.Button(
+            sel_bar,
+            text="⇄ Alternar Marcados (Espacio)",
+            command=self.toggle_selected_tree_rows,
+        ).pack(side=tk.LEFT, padx=4)
+
+        ttk.Label(
+            sel_bar,
+            text="💡 Tip: Clic en 'Acción', doble clic o barra espaciadora alterna el PDF.",
+            font=("Segoe UI", 8, "italic"),
+            foreground="#64748B",
+        ).pack(side=tk.RIGHT, padx=4)
+
         tree_container = ttk.Frame(files_frame)
         tree_container.pack(fill=tk.BOTH, expand=True)
 
         cols = ("accion", "original", "propuesto", "inscripcion", "bis")
         self.tree_files = ttk.Treeview(
-            tree_container, columns=cols, show="headings", selectmode="browse"
+            tree_container, columns=cols, show="headings", selectmode="extended"
         )
-        self.tree_files.heading("accion", text="Acción")
+        self.tree_files.heading("accion", text="Acción / Selección")
         self.tree_files.heading("original", text="Nombre PDF Original")
         self.tree_files.heading("propuesto", text="Nombre PDF Propuesto (Simulación)")
         self.tree_files.heading("inscripcion", text="Inscripción")
         self.tree_files.heading("bis", text="Bis")
 
-        self.tree_files.column("accion", width=110, anchor=tk.CENTER, stretch=False)
-        self.tree_files.column("original", width=265, anchor=tk.W)
+        self.tree_files.column("accion", width=125, anchor=tk.CENTER, stretch=False)
+        self.tree_files.column("original", width=255, anchor=tk.W)
         self.tree_files.column("propuesto", width=285, anchor=tk.W)
         self.tree_files.column("inscripcion", width=80, anchor=tk.CENTER, stretch=False)
         self.tree_files.column("bis", width=65, anchor=tk.CENTER, stretch=False)
 
         self.tree_files.tag_configure(
-            "RENOMBRAR", background="#F0FDF4", foreground="#14532D"
+            "RENOMBRAR", background="#DCFCE7", foreground="#166534"
         )
         self.tree_files.tag_configure(
             "IGNORAR", background="#F8FAFC", foreground="#64748B"
@@ -596,6 +631,9 @@ class CapturaCerosApp(tk.Tk):
         self.tree_files.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         self.tree_files.bind("<<TreeviewSelect>>", self._on_file_row_selected)
+        self.tree_files.bind("<Double-1>", self._on_tree_file_double_click)
+        self.tree_files.bind("<space>", self._on_tree_file_space)
+        self.tree_files.bind("<ButtonPress-1>", self._on_tree_file_click, add="+")
 
         self.pdf_viewer = EmbeddedPdfViewer(right_pane)
         self.pdf_viewer.pack(fill=tk.BOTH, expand=True)
@@ -2073,7 +2111,7 @@ class CapturaCerosApp(tk.Tk):
         self.lbl_orig_folder.config(text="(Seleccione un directorio)")
         self.lbl_prop_folder.config(text="-")
         self.lbl_files_summary.config(
-            text="En ceros a renombrar: 0   |   Con datos (Ignorados): 0"
+            text="PDFs a Renombrar: 0   |   Ignorados (Intactos): 0   |   Total: 0"
         )
         self.tree_files.delete(*self.tree_files.get_children())
         self.pdf_viewer.close_pdf()
@@ -2301,6 +2339,27 @@ class CapturaCerosApp(tk.Tk):
             self.var_anio.set(saved["anio"])
             self.var_suffix.set(saved["suffix"])
             self.var_notes.set(saved["notes"] or "")
+
+            # Restaurar selecciones previas de archivos si existen en la BD local
+            try:
+                saved_files = self.store.get_files_for_capture(int(saved["id"]))
+                saved_rename_names = {
+                    f["original_filename"]
+                    for f in saved_files
+                    if f.get("is_target_zero", 0) == 1
+                }
+                saved_ignored_names = {
+                    f["original_filename"]
+                    for f in saved_files
+                    if f.get("is_target_zero", 0) == 0
+                }
+                for p in analysis.all_pdfs:
+                    if p.original_name in saved_rename_names:
+                        p.is_selected_for_rename = True
+                    elif p.original_name in saved_ignored_names:
+                        p.is_selected_for_rename = False
+            except Exception:
+                pass
         else:
             self.var_allow_alpha_tomo.set(False)
             self.var_allow_alpha_frac.set(False)
@@ -2371,52 +2430,55 @@ class CapturaCerosApp(tk.Tk):
         )
 
         self.lbl_prop_folder.config(text=prop_folder)
+        rename_cnt = len(self.current_analysis.pdfs_to_rename)
+        ignored_cnt = len(self.current_analysis.pdfs_ignored)
+        total_cnt = len(self.current_analysis.all_pdfs)
         self.lbl_files_summary.config(
             text=(
-                f"PDFs en ceros a renombrar: {len(self.current_analysis.pdfs_to_rename)}   |   "
-                f"PDFs con datos (Ignorados): {len(self.current_analysis.pdfs_ignored)}"
+                f"PDFs a Renombrar: {rename_cnt}   |   "
+                f"Ignorados (Intactos): {ignored_cnt}   |   "
+                f"Total PDFs: {total_cnt}"
             )
         )
         self._populate_files_preview_tree()
 
     def _populate_files_preview_tree(self) -> None:
+        prev_sel = self.tree_files.selection()
         self.tree_files.delete(*self.tree_files.get_children())
         if not self.current_analysis:
             return
 
         mode = self.var_filter_files.get()
 
-        if mode in ("TODOS", "CEROS"):
-            for item in self.current_analysis.pdfs_to_rename:
-                self.tree_files.insert(
-                    "",
-                    tk.END,
-                    iid=item.full_path,
-                    values=(
-                        "RENOMBRAR",
-                        item.original_name,
-                        item.proposed_name,
-                        item.inscripcion,
-                        item.bis_and_extra,
-                    ),
-                    tags=("RENOMBRAR",),
-                )
+        for item in self.current_analysis.all_pdfs:
+            is_ren = item.is_selected_for_rename
+            if mode == "CEROS" and not is_ren:
+                continue
+            if mode == "IGNORADOS" and is_ren:
+                continue
 
-        if mode in ("TODOS", "IGNORADOS"):
-            for item in self.current_analysis.pdfs_ignored:
-                self.tree_files.insert(
-                    "",
-                    tk.END,
-                    iid=item.full_path,
-                    values=(
-                        "IGNORAR (Intacto)",
-                        item.original_name,
-                        item.original_name,
-                        "-",
-                        "-",
-                    ),
-                    tags=("IGNORAR",),
-                )
+            accion_text = "☑ RENOMBRAR" if is_ren else "☐ IGNORAR"
+            prop_text = item.proposed_name if is_ren else "(Sin cambios - Intacto)"
+            tag = "RENOMBRAR" if is_ren else "IGNORAR"
+
+            self.tree_files.insert(
+                "",
+                tk.END,
+                iid=item.full_path,
+                values=(
+                    accion_text,
+                    item.original_name,
+                    prop_text,
+                    item.inscripcion or "-",
+                    item.bis_and_extra or "-",
+                ),
+                tags=(tag,),
+            )
+
+        if prev_sel:
+            valid_sel = [iid for iid in prev_sel if self.tree_files.exists(iid)]
+            if valid_sel:
+                self.tree_files.selection_set(valid_sel)
 
     def _on_file_row_selected(self, _event: Optional[tk.Event] = None) -> None:
         sel = self.tree_files.selection()
@@ -2425,6 +2487,60 @@ class CapturaCerosApp(tk.Tk):
         pdf_full_path = sel[0]
         if os.path.isfile(pdf_full_path):
             self.pdf_viewer.load_pdf(pdf_full_path)
+
+    def _toggle_file_proposal_by_path(self, pdf_path: str) -> None:
+        if not self.current_analysis:
+            return
+        for p in self.current_analysis.all_pdfs:
+            if os.path.normcase(p.full_path) == os.path.normcase(pdf_path):
+                p.is_selected_for_rename = not p.is_selected_for_rename
+                break
+        self._on_fields_changed()
+
+    def toggle_selected_tree_rows(self) -> None:
+        if not self.current_analysis:
+            return
+        selected_iids = self.tree_files.selection()
+        if not selected_iids:
+            return
+        sel_set = {os.path.normcase(iid) for iid in selected_iids}
+        for p in self.current_analysis.all_pdfs:
+            if os.path.normcase(p.full_path) in sel_set:
+                p.is_selected_for_rename = not p.is_selected_for_rename
+        self._on_fields_changed()
+
+    def select_all_pdfs_for_rename(self) -> None:
+        if not self.current_analysis:
+            return
+        self.current_analysis.select_all()
+        self._on_fields_changed()
+
+    def select_only_zero_pdfs_for_rename(self) -> None:
+        if not self.current_analysis:
+            return
+        self.current_analysis.select_only_zeros()
+        self._on_fields_changed()
+
+    def deselect_all_pdfs_for_rename(self) -> None:
+        if not self.current_analysis:
+            return
+        self.current_analysis.deselect_all()
+        self._on_fields_changed()
+
+    def _on_tree_file_click(self, event: tk.Event) -> None:
+        col = self.tree_files.identify_column(event.x)
+        row_id = self.tree_files.identify_row(event.y)
+        if col == "#1" and row_id:
+            self._toggle_file_proposal_by_path(row_id)
+
+    def _on_tree_file_double_click(self, event: tk.Event) -> None:
+        row_id = self.tree_files.identify_row(event.y)
+        if row_id:
+            self._toggle_file_proposal_by_path(row_id)
+
+    def _on_tree_file_space(self, _event: tk.Event) -> str:
+        self.toggle_selected_tree_rows()
+        return "break"
 
     def save_current_capture_locally(self) -> None:
         if not self.current_analysis:
@@ -2458,8 +2574,9 @@ class CapturaCerosApp(tk.Tk):
 
         if len(self.current_analysis.pdfs_to_rename) == 0:
             messagebox.showwarning(
-                "Sin PDFs en ceros",
-                "Este directorio no contiene archivos PDF con formato en ceros (01_00_00_00_00_00_...).",
+                "Sin PDFs seleccionados",
+                "No hay ningún archivo PDF seleccionado para renombrar en este directorio.\n\n"
+                "Selecciona al menos un archivo (mediante 'Seleccionar Todos', 'Solo Año 0' o la casilla) antes de guardar.",
             )
             return
 
